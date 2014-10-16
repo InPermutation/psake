@@ -136,40 +136,44 @@ function Exec
         [Parameter(Position=2,Mandatory=0)][int]$maxRetries = 0,
         [Parameter(Position=3,Mandatory=0)][string]$retryTriggerErrorPattern = $null
     )
+    if (Get-Item Function:\LogExec) {
+        LogExec -cmd $cmd -errorMessage $errorMessage
+    } else {
 
-    $tryCount = 1
+        $tryCount = 1
 
-    do {
-        try {
-            $global:lastexitcode = 0                 
-            & $cmd
-            if ($lastexitcode -ne 0) {
-                throw ("Exec: " + $errorMessage)
+        do {
+            try {
+                $global:lastexitcode = 0
+                & $cmd
+                if ($lastexitcode -ne 0) {
+                    throw ("Exec: " + $errorMessage)
+                }
+                break
             }
-            break
-        }
-        catch [Exception]
-        {
-            if ($tryCount -gt $maxRetries) {
-                throw $_
-            }
-
-            if ($retryTriggerErrorPattern -ne $null) {
-                $isMatch = [regex]::IsMatch($_.Exception.Message, $retryTriggerErrorPattern)
-
-                if ($isMatch -eq $false) {
+            catch [Exception]
+            {
+                if ($tryCount -gt $maxRetries) {
                     throw $_
                 }
+
+                if ($retryTriggerErrorPattern -ne $null) {
+                    $isMatch = [regex]::IsMatch($_.Exception.Message, $retryTriggerErrorPattern)
+
+                    if ($isMatch -eq $false) {
+                        throw $_
+                    }
+                }
+
+                Write-Host "Try $tryCount failed, retrying again in 1 second..."
+
+                $tryCount++
+
+                [System.Threading.Thread]::Sleep([System.TimeSpan]::FromSeconds(1))
             }
-
-            Write-Host "Try $tryCount failed, retrying again in 1 second..."
-
-            $tryCount++
-
-            [System.Threading.Thread]::Sleep([System.TimeSpan]::FromSeconds(1))
         }
+        while ($true)
     }
-    while ($true)
 }
 
 # .ExternalHelp  psake.psm1-help.xml
@@ -461,14 +465,26 @@ function WriteColoredOutput {
     )
 
     $currentConfig = GetCurrentConfigurationOrDefault
-    if ($currentConfig.coloredOutput -eq $true) {
+    # Edited. We don't want to mess with raw colors because we're using log4net for coloring
+    #if ($currentConfig.coloredOutput -eq $true) {
+    if ($false) {
         if (($Host.UI -ne $null) -and ($Host.UI.RawUI -ne $null) -and ($Host.UI.RawUI.ForegroundColor -ne $null)) {
             $previousColor = $Host.UI.RawUI.ForegroundColor
             $Host.UI.RawUI.ForegroundColor = $foregroundcolor
         }
     }
 
-    $message
+    if ($psakeLogger -ne $null) {
+        if ($foregroundcolor -eq [System.ConsoleColor]::Red) {
+            $psakeLogger.Error($message)
+        } elseif ($foregroundcolor -eq [System.ConsoleColor]::Yellow) {
+            $psakeLogger.Warn($message)
+        } else {
+            $psakeLogger.Info($message)
+        }
+    } else {
+        $message
+    }
 
     if ($previousColor -ne $null) {
         $Host.UI.RawUI.ForegroundColor = $previousColor
@@ -767,10 +783,12 @@ function WriteDocumentation {
     } | sort 'Name' | format-table -autoSize -wrap -property Name,Alias,"Depends On",Default,Description
 }
 
+# Edited to use logger if available
 function WriteTaskTimeSummary($invokePsakeDuration) {
-    "-" * 70
-    "Build Time Report"
-    "-" * 70
+    $msg = "`n"
+    $msg += "-" * 70 + "`n"
+    $msg += "Build Time Report`n"
+    $msg += "-" * 70 + "`n"
     $list = @()
     $currentContext = $psake.context.Peek()
     while ($currentContext.executedTasks.Count -gt 0) {
@@ -789,8 +807,13 @@ function WriteTaskTimeSummary($invokePsakeDuration) {
         Name = "Total:";
         Duration = $invokePsakeDuration
     }
-    # using "out-string | where-object" to filter out the blank line that format-table prepends
-    $list | format-table -autoSize -property Name,Duration | out-string -stream | where-object { $_ }
+    $table = $list | format-table -autoSize -property Name,Duration | out-string
+    $msg += $table.Trim()
+    if ($psakeLogger -ne $null) {
+        $psakeLogger.Info($msg)
+    } else {
+        $msg
+    }
 }
 
 DATA msgs {
